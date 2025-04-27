@@ -319,7 +319,10 @@ def upload_annotated_image():
         else:
             print(f"Failed to upload {image_path}. Status code: {response.status_code}")
 
-# Takes three keypoints (not necessarily connected), and returns the angle between them (taking keypoint_joint as the "hinge" of the angle).
+"""
+Takes three keypoints (not necessarily connected), and returns the angle between them (taking keypoint_joint as the "hinge" of the angle).
+Returns value between [-180,180).
+"""
 def keypoint_angle(keypoint_start, keypoint_joint, keypoint_end):    
     # Calculate vectors from joint to start and end points
     x1, y1 = keypoint_start[0] - keypoint_joint[0], keypoint_start[1] - keypoint_joint[1]
@@ -334,9 +337,8 @@ def keypoint_angle(keypoint_start, keypoint_joint, keypoint_end):
     
     # Convert to degrees and normalize to range [0, 360)
     angle_deg = math.degrees(angle)
-    angle_deg = angle_deg % 360
     
-    return angle_deg
+    return ((angle_deg + 180) % 360) - 180
 
 # Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees).
 def keypoint_slope(keypoint_start, keypoint_end):
@@ -417,35 +419,37 @@ def get_feedback(pose_classification, pose):
     elbows_mid = np.mean([bodymap["left_elbow"][:2], bodymap["right_elbow"][:2]], axis=0)
     lips_mid = np.mean([bodymap["left_lip"][:2], bodymap["right_lip"][:2]], axis=0)
 
+    shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, hips_mid, keypoint_joint=knees_mid)
+    hips_are_above_shoulders = is_above_line(shoulders_mid, knees_mid, keypoint_joint=hips_mid)
+    left_elbow_angle = keypoint_angle(shoulder_left, wrist_left, keypoint_joint=elbow_left)
+    right_elbow_angle = keypoint_angle(shoulder_right, wrist_right, keypoint_joint=elbow_right)
+    lip_nose_slope = keypoint_slope(lips_mid, pose["nose"][:2])
+    back_slope = keypoint_slope(hips_mid, shoulders_mid)
+    thigh_slope = keypoint_slope(hips_mid, knees_mid)
+
     feedback = []
     
     if pose_classification == "pushup":
 
         # bad form, take care of worst issues first
-        shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, hips_mid, keypoint_joint=knees_mid)
         # if back is arched up (shoulder-hip-knee angle is deviates from 180 degrees by >20degrees , hip lies ABOVE line from shoulder to knees)
-        if (shoulders_knees_hips_angle > 20 \
-            & is_above_line(shoulders_mid, knees_mid, keypoint_joint=hips_mid)):
+        if (abs(shoulders_knees_hips_angle) > 20 and hips_are_above_shoulders):
             feedback.append("lower your hips!")
     
         # if back is arched down (shoulder-hip-knee angle is deviates from 180 degrees, hip lies BELOW line from shoulder to knees)
-        if (shoulders_knees_hips_angle > 20 \
-            & ~is_above_line(shoulders_mid, knees_mid, keypoint_joint=hips_mid)):
+        if (abs(shoulders_knees_hips_angle) > 20 and not hips_are_above_shoulders):
             feedback.append("raise your hips, don't slouch")
     
         # no need for this one (and lots of potential for error if observing directly from the side)
         # return "put your arms at shoulder width apart"
 
-        # if elbows aren't fully straightened
-        if (keypoint_angle(shoulders_mid, wrists_mid, keypoint_joint=elbows_mid) > 20 \
-            & is_above_line(shoulders_mid, wrists_mid, keypoint_joint=elbows_mid)):
-            feedback.append("fully extend!")
+        # if elbows aren't fully straightened (need to measure each side independently)
+        if (abs(left_elbow_angle) < 160 and abs(right_elbow_angle) < 160):
+            feedback.append("fully extend your elbows!")
     
         # return "don't flare elbow, tuck them in!"
     
         # if slope from midpoint of lip markers to tip of nose deviates from the slope of back (midpoint of hips to midpoint of shoulders)
-        lip_nose_slope = keypoint_slope(lips_mid, pose["nose"][:2])
-        back_slope = keypoint_slope(hips_mid, shoulders_mid)
         if (abs(lip_nose_slope - back_slope) > 40):
             feedback.append("don't look up!")
 
@@ -464,11 +468,12 @@ def get_feedback(pose_classification, pose):
         # bad form, take care of worst issues first
 
         # if slope of hips to knees deviates from horizontal
-        if (keypoint_slope(hips_mid, knees_mid) > 30):
+        if (abs(thigh_slope) > 30):
             return "squat deeper!"
     
         # if slope from back deviates from vertical
-        return "keep your back straight!"
+        if (abs(back_slope) > 30):
+            return "keep your back straight!"
     
         # if slope from back deviates from vertical more than 40 degrees
         return "don't lean forward too much!"
