@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import json
 import requests
 import time
-import datetime
+from datetime import datetime
 import random
 import math
 import os
@@ -115,7 +115,7 @@ Annotates an image with highlights, using a list of segment tuples of the desire
 '''
 def highlight_body_segments(pose, segments_to_highlight, text_message=None):
     
-    filename = "pose_prediction.png"
+    filename = "pose_prediction.jpg"
     image = cv2.imread(filename)
     highlighted_image = np.copy(image)
     h, w = highlighted_image.shape[:2]
@@ -166,7 +166,7 @@ def highlight_body_segments(pose, segments_to_highlight, text_message=None):
                        (0, 0, 0), #black
                        2)  # thickness
 
-    plt.imsave("highlighted.png", cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
+    plt.imsave("highlighted.jpg", cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
     
     # return np array of highlighted image
     return highlighted_image
@@ -190,7 +190,7 @@ def pose_detect(filename="image.jpg"):
     # annotated_image = draw_landmarks_on_image(image.numpy_view(), detection_result)
     annotated_image, body_maps = draw_landmarks_on_image(image.numpy_view()[:,:,::-1], detection_result)
     # plt.imshow(cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR))
-    plt.imsave("pose_prediction.png", cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR))
+    plt.imsave("pose_prediction.jpg", cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR))
 
     # print(json.dumps(body_maps[0], indent=2))
     return body_maps
@@ -201,11 +201,11 @@ Attempts to download and save an image from AWS server.
 def download_screenshot():
     print(f"Downloading screenshot at {time.strftime('%H:%M:%S')}")
     try:
-        # response = requests.get("http://3.15.203.82/files/screenshot.png")
-        response = requests.get("http://3.15.203.82/files/image.jpg")
+        response = requests.get("http://3.15.203.82/files/screenshot.jpg")
+        # response = requests.get("http://3.15.203.82/files/image.jpg")
         if response.status_code == 200:
-            # with open("screenshot.png", "wb") as f:
-            with open("image.jpg", "wb") as f:
+            with open("screenshot.jpg", "wb") as f:
+            # with open("image.jpg", "wb") as f:
                 f.write(response.content)
             
             print("Download successful, running pose analysis")
@@ -219,17 +219,17 @@ def download_screenshot():
 Predicts poses, returning a maps of all bodies in shot (up to a limit of num_poses, set in options at top.) Prints time of execution.
 If testing, pulls locally; otherwise attempts to download from AWS. 
 """
-def update_prediction(TESTING=False, filename="image.jpg"):
+def update_prediction(TESTING=False, filename="screenshot.jpg"):
     start_time = time.perf_counter()
     body_maps = {}
 
     if TESTING:
         print("FILE: ", filename)
-        cv2.imwrite("image.jpg", cv2.imread(filename))
+        cv2.imwrite("screenshot.jpg", cv2.imread(filename))
     else:
         download_screenshot()
     
-    body_maps = pose_detect()
+    body_maps = pose_detect(filename="screenshot.jpg")
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
@@ -289,7 +289,8 @@ def classify_exercise(pose):
     wrist_pair = (wrist_left, wrist_right)
     ankle_pair = (ankle_left, ankle_right)
     # this function uses the approach in note above
-    wrist_ankle_slope_is_horizontal = keypoint_pairs_are_horizontal(wrist_pair, ankle_pair, 45)
+    # wrist_ankle_slope_is_horizontal = keypoint_pairs_are_horizontal(wrist_pair, ankle_pair, 45)
+    wrist_ankle_slope_is_horizontal = abs(keypoint_slope_degrees(ankle_left, wrist_left)) < 45 and abs(keypoint_slope_degrees(ankle_right, wrist_right) < 45)
     
 
     print("joint angles", left_elbow_angle, right_elbow_angle, left_knee_angle, right_knee_angle)
@@ -311,9 +312,9 @@ def classify_exercise(pose):
 Uploads feedback and classification in a text response to AWS server in JSON format. 
 """
 def upload_json_response(exercise_feedback, pose_classification):
-    timestamp = str(datetime.datetime.now())
+    timestamp = str(datetime.now())
     feedback = exercise_feedback
-    feedback_file = exercise_feedback + ".wav"
+    feedback_file = exercise_feedback + ".mp3"
 
     data = {
         'timestamp': timestamp, 
@@ -389,16 +390,16 @@ def upload_test_image(verbose=False):
 Uploads pose_prediction.png to AWS.
 """
 # TODO: rewrite to change filename
-def upload_annotated_image(verbose=False):
-    image_path = "pose_prediction.png"
+def upload_annotated_image(verbose=False, image_path="screenshot.jpg"):
+    # image_path = "pose_prediction.png"
 
     with open(image_path, 'rb') as image_file:
-        files = {'file': ('pose_prediction.png', image_file)} 
+        files = {'file': ('pose_prediction.jpg', image_file)} 
         response = requests.post('http://3.15.203.82/upload', files=files)   
 
         if verbose:
             if response.status_code == 200:
-                print(f"Image {image_path} uploaded successfully as 'pose_prediction.png'!")
+                print(f"Image {image_path} uploaded successfully as '{image_path}'!")
 
             else:
                 print(f"Failed to upload {image_path}. Status code: {response.status_code}")
@@ -559,6 +560,17 @@ def get_feedback(pose_classification, pose):
 
     
     if pose_classification == "pushup_UP":
+        # bad form, take care of worst issues first
+        # if back is arched up (shoulder-hip-knee angle is deviates from 180 degrees by >20degrees , hip lies ABOVE line from shoulder to knees)
+        if (abs(shoulders_knees_hips_angle) > 20 and hips_are_above_shoulders):
+            feedback.append("lower your hips!")
+            problem_limbs.update({('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee')})
+    
+        # if back is arched down (shoulder-hip-knee angle is deviates from 180 degrees, hip lies BELOW line from shoulder to knees)
+        if (abs(shoulders_knees_hips_angle) > 20 and not hips_are_above_shoulders):
+            feedback.append("raise your hips, don't slouch")
+            problem_limbs.update({('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee')})
+
         # if elbows aren't fully straightened (need to measure each side independently)
         if (abs(left_elbow_angle) < 160 and abs(right_elbow_angle) < 160):
             feedback.append("fully extend your elbows!")
@@ -580,7 +592,7 @@ def get_feedback(pose_classification, pose):
             problem_limbs.update({('right_hip', 'right_knee'), ('left_hip', 'left_knee')})
     
         # if slope from back deviates from vertical more than 40 degrees
-        if (abs(90-back_slope) > 30):
+        if (abs(90-back_slope) > 50):
             straighten_back_feedback = ["don't lean forward too much!", "keep your back straight!"]
             feedback.append(random.choice(straighten_back_feedback))
             problem_limbs.update({('right_hip', 'right_shoulder'), ('left_hip', 'left_shoulder')})
@@ -618,23 +630,24 @@ def get_feedback(pose_classification, pose):
 
 if __name__ == '__main__':
     print("Beginning server")
-    # download_screenshot()
-    # update_prediction()
+    download_screenshot()
+    update_prediction()
 
-    TESTING = True
+    TESTING = False
     TEST_IMAGE = ""
 
     test_path = 'test_imgs_out'
     test_file_count = sum(1 for item in os.scandir(test_path) if item.is_file())
     body_maps = {}
 
-    # while True:
-    for sample in range(20):
+    while True:
+    # for sample in range(20):
+        process_start_time = datetime.now()
         
         if TESTING:
             # upload dummy data
             TEST_IMAGE = upload_test_image()
-            time.sleep(1)
+            # time.sleep(1)
 
         # pull stored data on AWS and predict
         if TESTING:
@@ -643,27 +656,35 @@ if __name__ == '__main__':
             body_maps = update_prediction()
 
         # classify exercise
-        pose = body_maps[0] # get just one pose of interest
-        pose_classification = classify_exercise(pose)
-        print(pose_classification)
-        time.sleep(1)
+        if (len(body_maps)):
+            pose = body_maps[0] # get just one pose of interest
+            pose_classification = classify_exercise(pose)
+            print(pose_classification)
+            # time.sleep(1)
 
-        feedback, problem_limbs = get_feedback(pose_classification, pose)
-        # feedback = "DUMMY DATA - you're doing great!"
+            feedback, problem_limbs = get_feedback(pose_classification, pose)
+            # feedback = "DUMMY DATA - you're doing great!"
 
-        # send json response to AWS with classification and feedback
-        upload_json_response(feedback[0], pose_classification)
-        upload_annotated_image()
+            # send json response to AWS with classification and feedback
+            upload_json_response(feedback[0], pose_classification)
+            # upload_annotated_image(image_path="pose_prediction.png")
+            upload_annotated_image(image_path="highlighted.jpg")
 
-        feedback_concat = pose_classification+"\n"+"\n".join(feedback)
-        highlighted_image = highlight_body_segments(pose, problem_limbs, feedback_concat)
+            feedback_concat = pose_classification+"\n"+"\n".join(feedback)
+            highlighted_image = highlight_body_segments(pose, problem_limbs, feedback_concat)
+
+        else:
+            print("No body detected in frame.")
 
         
-        image = cv2.imread("highlighted.png")
-        test_copy = np.copy(image)
-        plt.imsave("test_imgs_out/test_"+str(test_file_count+sample)+".png", cv2.cvtColor(test_copy, cv2.COLOR_RGB2BGR))
+        process_time = datetime.now() - process_start_time
+        print("PROCESS TIME: ", process_time)
+        
+        # image = cv2.imread("highlighted.png")
+        # test_copy = np.copy(image)
+        # plt.imsave("test_imgs_out/test_"+str(test_file_count+sample)+".png", cv2.cvtColor(test_copy, cv2.COLOR_RGB2BGR))
 
-        time.sleep(2)
+        time.sleep(0.25)
         # if pose_classification == 'squat':
         #     break
 
