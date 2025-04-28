@@ -14,6 +14,21 @@ import random
 import math
 import os
 
+base_options = python.BaseOptions(model_asset_path='pose_landmarker.task')
+    # , delegate=python.BaseOptions.Delegate.GPU)
+options = vision.PoseLandmarkerOptions(
+    base_options=base_options,
+    num_poses=1,
+    output_segmentation_masks=False,
+    min_pose_detection_confidence = 0.4,
+    min_pose_presence_confidence = 0.3,
+    min_tracking_confidence = 0.3)
+detector = vision.PoseLandmarker.create_from_options(options)
+
+
+PUSHUP_THRESHOLD = 145
+SQUAT_THRESHOLD = 135
+
 
 '''
 Converts the raw landmark coords into a dictionary, mapping a string of the body part to its detected location.
@@ -65,7 +80,6 @@ def get_body_part_map(pose_landmarks_proto):
     
     return bodymap
 
-
 '''
 Annotates an image with landmarks, and returns a map mapping body parts to their coords. 
 '''
@@ -96,6 +110,9 @@ def draw_landmarks_on_image(rgb_image, detection_result):
 
     return annotated_image, pose_body_maps
 
+'''
+Annotates an image with highlights, using a list of segment tuples of the desired body parts. Also overlays text (in the top left by default).
+'''
 def highlight_body_segments(pose, segments_to_highlight, text_message=None):
     
     filename = "pose_prediction.png"
@@ -154,18 +171,9 @@ def highlight_body_segments(pose, segments_to_highlight, text_message=None):
     # return np array of highlighted image
     return highlighted_image
 
-# STEP 2: Create an PoseLandmarker object.
-base_options = python.BaseOptions(model_asset_path='pose_landmarker.task')
-    # , delegate=python.BaseOptions.Delegate.GPU)
-options = vision.PoseLandmarkerOptions(
-    base_options=base_options,
-    num_poses=1,
-    output_segmentation_masks=False,
-    min_pose_detection_confidence = 0.3,
-    min_pose_presence_confidence = 0.3,
-    min_tracking_confidence = 0.3)
-detector = vision.PoseLandmarker.create_from_options(options)
-
+'''
+Performs pose estimation on the given file, returning a maps of all bodies in shot (up to a limit of num_poses, set in options at top.)
+'''
 def pose_detect(filename="image.jpg"):
     # Test image.
     img = cv2.imread(filename)
@@ -186,8 +194,10 @@ def pose_detect(filename="image.jpg"):
 
     # print(json.dumps(body_maps[0], indent=2))
     return body_maps
-    
 
+"""
+Attempts to download and save an image from AWS server.
+"""
 def download_screenshot():
     print(f"Downloading screenshot at {time.strftime('%H:%M:%S')}")
     try:
@@ -205,6 +215,10 @@ def download_screenshot():
     except Exception as e:
         print(f"Error downloading: {e}")
 
+"""
+Predicts poses, returning a maps of all bodies in shot (up to a limit of num_poses, set in options at top.) Prints time of execution.
+If testing, pulls locally; otherwise attempts to download from AWS. 
+"""
 def update_prediction(TESTING=False, filename="image.jpg"):
     start_time = time.perf_counter()
     body_maps = {}
@@ -212,7 +226,6 @@ def update_prediction(TESTING=False, filename="image.jpg"):
     if TESTING:
         print("FILE: ", filename)
         cv2.imwrite("image.jpg", cv2.imread(filename))
-        # body_maps = pose_detect()
     else:
         download_screenshot()
     
@@ -228,16 +241,11 @@ def update_prediction(TESTING=False, filename="image.jpg"):
 
     return body_maps
 
+"""
+Classifies pose into various exercises. 
+Currently we have pushups and squats (with an UP and DOWN for each) but this can be expanded to any number of exercises.
+"""
 def classify_exercise(pose):
-    """
-    Classify exercise as either pushup or squat based on pose landmarks
-    
-    Args:
-        bodymap: Dictionary mapping body parts to their coordinates
-    
-    Returns:
-        String: "pushup" or "squat" or "neutral"
-    """
     
     ankle_right = pose["right_ankle"][:2]
     ankle_left  = pose["left_ankle"][:2]
@@ -275,16 +283,14 @@ def classify_exercise(pose):
     
     # this classification is just looking at whether the y coord of the wrists are on relatively the same level as the ankles. 
     # NOTE: we are dealing with 3D data, so this will break if its a head on view (where the slope will be near vertical.)
-    # as a quick (but not complete fix to this, we can instead take the slope between right wrist / left ankle, left wrist / right ankle.)
+    # as a quick (but not complete) fix to this, we can instead take the slope between right wrist / left ankle, left wrist / right ankle.
 
     # if both slopes are less than 45 degrees
     wrist_pair = (wrist_left, wrist_right)
     ankle_pair = (ankle_left, ankle_right)
-    # this function uses the approach above
+    # this function uses the approach in note above
     wrist_ankle_slope_is_horizontal = keypoint_pairs_are_horizontal(wrist_pair, ankle_pair, 45)
     
-    PUSHUP_THRESHOLD = 145
-    SQUAT_THRESHOLD = 135
 
     print("joint angles", left_elbow_angle, right_elbow_angle, left_knee_angle, right_knee_angle)
 
@@ -300,7 +306,10 @@ def classify_exercise(pose):
             return "squat_DOWN"
         
     return "neutral"
-    
+
+"""
+Uploads feedback and classification in a text response to AWS server in JSON format. 
+"""
 def upload_json_response(exercise_feedback, pose_classification):
     timestamp = str(datetime.datetime.now())
     feedback = exercise_feedback
@@ -326,7 +335,10 @@ def upload_json_response(exercise_feedback, pose_classification):
     
     # print(f"Status Code: {response.status_code}")
     # print(f"Response: {response.text}")
-    
+
+"""
+Uploads a random test image to AWS.
+"""
 def upload_test_image(verbose=False):
     workout_imgs = [
         "test_imgs\pushup_DOWN_dip.jpg",
@@ -372,7 +384,11 @@ def upload_test_image(verbose=False):
                 print(f"Failed to upload {image_path}. Status code: {response.status_code}")
     
     return image_path
-    
+
+"""
+Uploads pose_prediction.png to AWS.
+"""
+# TODO: rewrite to change filename
 def upload_annotated_image(verbose=False):
     image_path = "pose_prediction.png"
 
@@ -408,14 +424,18 @@ def keypoint_angle(start, joint, end):
     
     return ((angle_deg + 180) % 360) - 180
 
-# Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). Returns the numerical slope (dy/dx).
+"""
+Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). Returns the numerical slope (dy/dx).
+"""
 def keypoint_slope(start, end):
     dy = end[1] - start[1]
     dx = end[0] - start[0]
 
     return dy/dx
 
-# Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). Returns the slope in degrees.
+"""
+Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). Returns the slope in degrees.
+"""
 def keypoint_slope_degrees(start, end):
     return keypoint_angle(start=(start[0]+1, start[1]), joint=start, end=end)
 
@@ -455,7 +475,9 @@ def is_above_line(start, end, joint):
 
     return joint[1] > y_joint_star
 
-# Returns the y-coord of an x-coord sample if taken along the line from start to end point.
+"""
+Returns the y-coord of an x-coord sample if taken along the line from start to end point.
+"""
 def interpolate(start, end, x_sample):
     x1, y1 = start[0], start[1]
     x2, y2 = end[0], end[1]
@@ -466,6 +488,9 @@ def interpolate(start, end, x_sample):
 
     return y_sample
 
+"""
+Analyzes pose landmarks to determine what feedback to forward to user for proper form.
+"""
 def get_feedback(pose_classification, pose):
     
     ankle_right = pose["right_ankle"][:2]
@@ -492,7 +517,7 @@ def get_feedback(pose_classification, pose):
     elbows_mid = np.mean([pose["left_elbow"][:2], pose["right_elbow"][:2]], axis=0)
     lips_mid = np.mean([pose["mouth_left"][:2], pose["mouth_right"][:2]], axis=0)
 
-    shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, knees_mid, hips_mid)
+    shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, hips_mid, knees_mid)
     hips_are_above_shoulders = is_above_line(shoulders_mid, hips_mid, knees_mid)
     left_elbow_angle = keypoint_angle(shoulder_left, elbow_left, wrist_left)
     right_elbow_angle = keypoint_angle(shoulder_right, elbow_right, wrist_right)
@@ -518,11 +543,6 @@ def get_feedback(pose_classification, pose):
         # no need for this one (and lots of potential for error if observing directly from the side)
         # return "put your arms at shoulder width apart"
 
-        # if elbows aren't fully straightened (need to measure each side independently)
-        if (abs(left_elbow_angle) < 160 and abs(right_elbow_angle) < 160):
-            feedback.append("fully extend your elbows!")
-            problem_limbs.update({('right_elbow', 'right_shoulder'), ('right_elbow', 'right_wrist'), ('left_elbow', 'left_shoulder'), ('left_elbow', 'left_wrist')})
-    
         # return "don't flare elbow, tuck them in!"
     
         # if slope from midpoint of lip markers to tip of nose deviates from the slope of back (midpoint of hips to midpoint of shoulders)
@@ -531,17 +551,26 @@ def get_feedback(pose_classification, pose):
             problem_limbs.update({('right_eye_inner', 'nose'), ('left_eye_inner', 'nose')})
 
         # good
-        praise = ["perfect, keep going!",
-                  "nice form, make sure to keep your core engaged!"]
+        praise = ["chiseled abs! chiseled abs!", "nice form, make sure to keep your core engaged!", "hydrated?", "champion!"]
         
         # only praise if we didn't have any negative feedback
         if len(feedback) == 0:
             feedback.append(random.choice(praise))
+
     
     if pose_classification == "pushup_UP":
-        pushup_UP_feedback = ["And... down!", "down!", "next rep!"]
-        feedback.append(random.choice(pushup_UP_feedback))
+        # if elbows aren't fully straightened (need to measure each side independently)
+        if (abs(left_elbow_angle) < 160 and abs(right_elbow_angle) < 160):
+            feedback.append("fully extend your elbows!")
+            problem_limbs.update({('right_elbow', 'right_shoulder'), ('right_elbow', 'right_wrist'), ('left_elbow', 'left_shoulder'), ('left_elbow', 'left_wrist')})
+
+        # good
+        praise = ["And... down!", "down!", "next rep!", "hydrated?", "champion!"]
         
+        if len(feedback) == 0:
+            feedback.append(random.choice(praise))
+        
+
     if pose_classification == "squat_DOWN":
         # bad form, take care of worst issues first
 
@@ -569,7 +598,9 @@ def get_feedback(pose_classification, pose):
         # good
         praise = ["perfect, keep going!",
                   "nice form, make sure to hinge at the hips!",
-                  "great form, push up through your heels! "]
+                  "great form, push up through your heels! ",
+                  "hydrated?",
+                  "champion!"]
         
         # only praise if we didn't have any negative feedback
         if len(feedback) == 0:
@@ -632,7 +663,7 @@ if __name__ == '__main__':
         test_copy = np.copy(image)
         plt.imsave("test_imgs_out/test_"+str(test_file_count+sample)+".png", cv2.cvtColor(test_copy, cv2.COLOR_RGB2BGR))
 
-        time.sleep(10)
+        time.sleep(2)
         # if pose_classification == 'squat':
         #     break
 
