@@ -12,6 +12,7 @@ import time
 import datetime
 import random
 import math
+import os
 
 
 '''
@@ -95,52 +96,62 @@ def draw_landmarks_on_image(rgb_image, detection_result):
 
     return annotated_image, pose_body_maps
 
-def highlight_body_segments(pose, segments_to_highlight):
-    '''
-    Highlights specific body segments on an already annotated image.
+def highlight_body_segments(pose, segments_to_highlight, text_message=None):
     
-    Args:
-        pose: Dictionary mapping body part names to their coordinates
-        segments_to_highlight: List of tuples of body part names to highlight, e.g. 
-                              [('left_shoulder', 'left_elbow'), ('right_hip', 'right_knee')]
-    
-    Returns:
-        highlighted_image: The image with highlighted segments
-    '''
     filename = "pose_prediction.png"
-    
-    # Load the image
     image = cv2.imread(filename)
     highlighted_image = np.copy(image)
-    
-    # Get the image dimensions
     h, w = highlighted_image.shape[:2]
     
-    # Draw each segment to highlight
+    # draw each segment to highlight
     for start_part, end_part in segments_to_highlight:
-        # Check if both body parts exist in the pose dictionary
         if start_part in pose and end_part in pose:
-            # Get coordinates of start and end points
             start_point = pose[start_part]
             end_point = pose[end_part]
             
-            # Convert normalized coordinates to pixel coordinates
+            # change normalized coordinates to pixel coordinates
             start_pixel = (int(start_point[0] * w), int(start_point[1] * h))
             end_pixel = (int(end_point[0] * w), int(end_point[1] * h))
             
-            # Draw a thick red line
             cv2.line(highlighted_image, 
                      start_pixel, 
                      end_pixel, 
-                     color=(0, 0, 255),  # BGR format: Red
+                     color=(0, 0, 255),  # bgr format: red
                      thickness=5)
-    
-    # Save the highlighted image
-    # output_filename = "highlighted_" + filename
-    # cv2.imwrite(output_filename, highlighted_image)
+            
+    if text_message:
+        text_position = (20, 40) # top left
+        lines = text_message.split('\n')
+        
+        # background
+        line_height = 30  # height per line
+        max_width = 0
+        
+        # find the widest line to size our background
+        for line in lines:
+            width = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0][0]
+            max_width = max(max_width, width)
+        
+        cv2.rectangle(highlighted_image, 
+                     (text_position[0] - 10, text_position[1] - 30), 
+                     (text_position[0] + max_width + 10, text_position[1] + (len(lines) - 1) * line_height + 10), 
+                     (255, 255, 255), 
+                     -1)  # Filled rectangle
+        
+        # text overlay
+        for i, line in enumerate(lines):
+            y_position = text_position[1] + i * line_height
+            cv2.putText(highlighted_image, 
+                       line, 
+                       (text_position[0], y_position), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.7, 
+                       (0, 0, 0), #black
+                       2)  # thickness
+
     plt.imsave("highlighted.png", cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
     
-    # Return the numpy array of the highlighted image
+    # return np array of highlighted image
     return highlighted_image
 
 # STEP 2: Create an PoseLandmarker object.
@@ -214,7 +225,7 @@ def update_prediction(TESTING=False, filename="image.jpg"):
         print(f"Retrieved local image and predicted in {elapsed_time:.4f} seconds")
     else:
         print(f"Downloaded image and predicted in {elapsed_time:.4f} seconds")
-        
+
     return body_maps
 
 def classify_exercise(pose):
@@ -272,13 +283,18 @@ def classify_exercise(pose):
     # this function uses the approach above
     wrist_ankle_slope_is_horizontal = keypoint_pairs_are_horizontal(wrist_pair, ankle_pair, 45)
     
+    PUSHUP_THRESHOLD = 145
+    SQUAT_THRESHOLD = 135
+
+    print("joint angles", left_elbow_angle, right_elbow_angle, left_knee_angle, right_knee_angle)
+
     if wrist_ankle_slope_is_horizontal:
-        if left_elbow_angle > 160 and right_elbow_angle > 160:
+        if abs(left_elbow_angle) > PUSHUP_THRESHOLD and abs(right_elbow_angle) > PUSHUP_THRESHOLD:
             return "pushup_UP"
         else: 
             return "pushup_DOWN"
     else:
-        if left_elbow_angle > 160 and right_elbow_angle > 160:
+        if abs(left_knee_angle) > SQUAT_THRESHOLD and abs(right_knee_angle) > SQUAT_THRESHOLD:
             return "neutral" # which is the same as squat_UP
         else:
             return "squat_DOWN"
@@ -308,10 +324,10 @@ def upload_json_response(exercise_feedback, pose_classification):
     )
 
     
-    print(f"Status Code: {response.status_code}")
-    print(f"Response: {response.text}")
+    # print(f"Status Code: {response.status_code}")
+    # print(f"Response: {response.text}")
     
-def upload_test_image():
+def upload_test_image(verbose=False):
     workout_imgs = [
         "test_imgs\pushup_DOWN_dip.jpg",
         "test_imgs\pushup_DOWN_flat.jpg",
@@ -348,26 +364,28 @@ def upload_test_image():
         files = {'file': ('image.jpg', image_file)} 
         response = requests.post('http://3.15.203.82/upload', files=files)   
 
-        if response.status_code == 200:
-            print(f"Image {image_path} uploaded successfully as 'image.jpg'!")
+        if verbose:
+            if response.status_code == 200:
+                print(f"Image {image_path} uploaded successfully as 'image.jpg'!")
 
-        else:
-            print(f"Failed to upload {image_path}. Status code: {response.status_code}")
+            else:
+                print(f"Failed to upload {image_path}. Status code: {response.status_code}")
     
     return image_path
     
-def upload_annotated_image():
+def upload_annotated_image(verbose=False):
     image_path = "pose_prediction.png"
 
     with open(image_path, 'rb') as image_file:
         files = {'file': ('pose_prediction.png', image_file)} 
         response = requests.post('http://3.15.203.82/upload', files=files)   
 
-        if response.status_code == 200:
-            print(f"Image {image_path} uploaded successfully as 'pose_prediction.png'!")
+        if verbose:
+            if response.status_code == 200:
+                print(f"Image {image_path} uploaded successfully as 'pose_prediction.png'!")
 
-        else:
-            print(f"Failed to upload {image_path}. Status code: {response.status_code}")
+            else:
+                print(f"Failed to upload {image_path}. Status code: {response.status_code}")
 
 """
 Takes three keypoints (not necessarily connected), and returns the angle between them (taking keypoint_joint as the "hinge" of the angle).
@@ -562,7 +580,7 @@ def get_feedback(pose_classification, pose):
         feedback.append("let's get to it!")
 
     print("Feedback: ", feedback)
-    print("HIGHLIGHTED LIMBS: ", problem_limbs)
+    # print("HIGHLIGHTED LIMBS: ", problem_limbs)
     return feedback, problem_limbs
         
 
@@ -570,17 +588,17 @@ def get_feedback(pose_classification, pose):
 if __name__ == '__main__':
     print("Beginning server")
     # download_screenshot()
-
     # update_prediction()
-
-    # interval_seconds = 60  # Change this to your desired interval
-    # schedule.every(interval_seconds).seconds.do(update_prediction)
 
     TESTING = True
     TEST_IMAGE = ""
+
+    test_path = 'test_imgs_out'
+    test_file_count = sum(1 for item in os.scandir(test_path) if item.is_file())
     body_maps = {}
 
-    while True:
+    # while True:
+    for sample in range(20):
         
         if TESTING:
             # upload dummy data
@@ -606,15 +624,19 @@ if __name__ == '__main__':
         upload_json_response(feedback[0], pose_classification)
         upload_annotated_image()
 
-        highlighted_image = highlight_body_segments(pose, problem_limbs)
+        feedback_concat = pose_classification+"\n"+"\n".join(feedback)
+        highlighted_image = highlight_body_segments(pose, problem_limbs, feedback_concat)
 
-        # Display or save the highlighted image
-        # cv2.imshow('Highlighted Pose', cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
-        # cv2.waitKey(0)
+        
+        image = cv2.imread("highlighted.png")
+        test_copy = np.copy(image)
+        plt.imsave("test_imgs_out/test_"+str(test_file_count+sample)+".png", cv2.cvtColor(test_copy, cv2.COLOR_RGB2BGR))
 
-        time.sleep(2)
+        time.sleep(10)
         # if pose_classification == 'squat':
         #     break
+
+        print("="*60, "\n")
 
 
 
