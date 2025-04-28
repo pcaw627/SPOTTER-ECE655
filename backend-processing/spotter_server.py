@@ -95,6 +95,45 @@ def draw_landmarks_on_image(rgb_image, detection_result):
 
     return annotated_image, pose_body_maps
 
+def highlight_body_segments(annotated_image, pose_body_maps, segments_to_highlight):
+    '''
+    Highlights specific body segments on an already annotated image.
+    
+    Args:
+        annotated_image: The image already annotated with pose landmarks
+        pose_body_maps: List of body part maps returned by draw_landmarks_on_image
+        segments_to_highlight: List of tuples of body part names to highlight, e.g. 
+                               [('left_shoulder', 'left_elbow'), ('right_hip', 'right_knee')]
+    
+    Returns:
+        highlighted_image: The image with highlighted segments
+    '''
+    highlighted_image = np.copy(annotated_image)
+    
+    # Process each detected pose
+    for body_map in pose_body_maps:
+        # Draw each segment to highlight
+        for start_part, end_part in segments_to_highlight:
+            # Check if both body parts exist in the map
+            if start_part in body_map and end_part in body_map:
+                # Get coordinates of start and end points
+                start_point = body_map[start_part]
+                end_point = body_map[end_part]
+                
+                # Convert normalized coordinates to pixel coordinates
+                h, w = highlighted_image.shape[:2]
+                start_pixel = (int(start_point[0] * w), int(start_point[1] * h))
+                end_pixel = (int(end_point[0] * w), int(end_point[1] * h))
+                
+                # Draw a thick red line
+                cv2.line(highlighted_image, 
+                         start_pixel, 
+                         end_pixel, 
+                         color=(0, 0, 255),  # BGR format: Red
+                         thickness=5)
+    
+    return highlighted_image
+
 # STEP 2: Create an PoseLandmarker object.
 base_options = python.BaseOptions(model_asset_path='pose_landmarker.task')
     # , delegate=python.BaseOptions.Delegate.GPU)
@@ -169,49 +208,62 @@ def classify_exercise(bodymap):
         String: "pushup" or "squat" or "neutral"
     """
     
-    wrists_mid = np.mean([
-        bodymap["left_wrist"][:2], 
-        bodymap["right_wrist"][:2]
-    ], axis=0)
-    
-    ankles_mid = np.mean([
-        bodymap["left_ankle"][:2], 
-        bodymap["right_ankle"][:2]
-    ], axis=0)
+    ankle_right = pose["right_ankle"][:2]
+    ankle_left  = pose["left_ankle"][:2]
+    wrist_right = pose["right_wrist"][:2]
+    wrist_left  = pose["left_wrist"][:2]
+    shoulder_right = pose["right_shoulder"][:2]
+    shoulder_left  = pose["left_shoulder"][:2]
+    hip_right = pose["right_hip"][:2]
+    hip_left  = pose["left_hip"][:2]
+    elbow_right = pose["right_elbow"][:2]
+    elbow_left  = pose["left_elbow"][:2]
+    knee_right = pose["right_knee"][:2]
+    knee_left  = pose["left_knee"][:2]
+    lip_right = pose["mouth_right"][:2]
+    lip_left  = pose["mouth_left"][:2]
+    nose  = pose["nose"][:2]
 
-    ankle_left = bodymap["left_ankle"][:2]
-    ankle_right = bodymap["right_ankle"][:2]
-    wrist_left = bodymap["left_wrist"][:2]
-    wrist_right = bodymap["right_wrist"][:2]
+    wrists_mid = np.mean([pose["left_wrist"][:2], pose["right_wrist"][:2]], axis=0)
+    shoulders_mid = np.mean([pose["left_shoulder"][:2], pose["right_shoulder"][:2]], axis=0)
+    ankles_mid = np.mean([pose["left_ankle"][:2], pose["right_ankle"][:2]], axis=0)
+    hips_mid = np.mean([pose["left_hip"][:2], pose["right_hip"][:2]], axis=0)
+    knees_mid = np.mean([pose["left_knee"][:2], pose["right_knee"][:2]], axis=0)
+    elbows_mid = np.mean([pose["left_elbow"][:2], pose["right_elbow"][:2]], axis=0)
+    lips_mid = np.mean([pose["mouth_left"][:2], pose["mouth_right"][:2]], axis=0)
+
+    shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, knees_mid, hips_mid)
+    hips_are_above_shoulders = is_above_line(shoulders_mid, hips_mid, knees_mid)
+    left_elbow_angle = keypoint_angle(shoulder_left, elbow_left, wrist_left)
+    right_elbow_angle = keypoint_angle(shoulder_right, elbow_right, wrist_right)
+    left_knee_angle = keypoint_angle(hip_left, knee_left, ankle_left)
+    right_knee_angle = keypoint_angle(hip_right, knee_right, ankle_right)
+    lip_nose_slope = keypoint_slope_degrees(lips_mid, nose)
+    back_slope = keypoint_slope_degrees(hips_mid, shoulders_mid)
+    thigh_slope = keypoint_slope_degrees(hips_mid, knees_mid)
     
     # this classification is just looking at whether the y coord of the wrists are on relatively the same level as the ankles. 
     # NOTE: we are dealing with 3D data, so this will break if its a head on view (where the slope will be near vertical.)
     # as a quick (but not complete fix to this, we can instead take the slope between right wrist / left ankle, left wrist / right ankle.)
-    # dy = wrists[1] - ankles[1]
-    # dx = wrists[0] - ankles[0]
-    # wrist_foot_slope = abs(dy/dx)
-    # is_horizontal = wrist_foot_slope <= 1
-
-    # this should work better, regardless of z-orientation.
-    dy1 = wrist_left[1] - ankle_right[1]
-    dx1 = wrist_left[0] - ankle_right[0]
-    leftwrist_rightfoot_slope = abs(dy1/dx1)
-    
-    dy2 = wrist_right[1] - ankle_left[1]
-    dx2 = wrist_right[0] - ankle_left[0]
-    rightwrist_leftfoot_slope = abs(dy2/dx2)
 
     # if both slopes are less than 45 degrees
     wrist_pair = (wrist_left, wrist_right)
     ankle_pair = (ankle_left, ankle_right)
+    # this function uses the approach above
     wrist_ankle_slope_is_horizontal = keypoint_pairs_are_horizontal(wrist_pair, ankle_pair, 45)
-    # wrist_ankle_slope_is_horizontal = (leftwrist_rightfoot_slope <= 1) & (rightwrist_leftfoot_slope <= 1)
-    
     
     if wrist_ankle_slope_is_horizontal:
-        return "pushup"
+        if left_elbow_angle > 160 and right_elbow_angle > 160:
+            return "pushup_UP"
+        else: 
+            return "pushup_DOWN"
     else:
-        return "squat"
+        if left_elbow_angle > 160 and right_elbow_angle > 160:
+            return "neutral" # which is the same as squat_UP
+        else:
+            return "squat_DOWN"
+        
+    return "neutral"
     
 def upload_json_response(exercise_feedback, pose_classification):
     timestamp = str(datetime.datetime.now())
@@ -281,40 +333,16 @@ def upload_test_image():
 
         else:
             print(f"Failed to upload {image_path}. Status code: {response.status_code}")
-    timestamp = str(datetime.datetime.now())
-    feedback = exercise_feedback
-    feedback_file = exercise_feedback + ".wav"
-
-    data = {
-        'timestamp': timestamp, 
-        'feedback': feedback, 
-        'pose_classification': pose_classification, 
-        'feedback_audio_file': feedback_file
-    }
-
-    headers = {
-        'Content-Type': 'application/json',
-    }
-
-    response = requests.post(
-        url='http://3.15.203.82/json',
-        data=json.dumps(data),
-        headers=headers
-    )
-
-    
-    print(f"Status Code: {response.status_code}")
-    print(f"Response: {response.text}")
     
 def upload_annotated_image():
-    image_path = "pose_prediction.jpg"
+    image_path = "pose_prediction.png"
 
     with open(image_path, 'rb') as image_file:
-        files = {'file': ('pose_prediction.jpg', image_file)} 
+        files = {'file': ('pose_prediction.png', image_file)} 
         response = requests.post('http://3.15.203.82/upload', files=files)   
 
         if response.status_code == 200:
-            print(f"Image {image_path} uploaded successfully as 'pose_prediction.jpg'!")
+            print(f"Image {image_path} uploaded successfully as 'pose_prediction.png'!")
 
         else:
             print(f"Failed to upload {image_path}. Status code: {response.status_code}")
@@ -323,10 +351,10 @@ def upload_annotated_image():
 Takes three keypoints (not necessarily connected), and returns the angle between them (taking keypoint_joint as the "hinge" of the angle).
 Returns value between [-180,180).
 """
-def keypoint_angle(keypoint_start, keypoint_joint, keypoint_end):    
+def keypoint_angle(start, joint, end):    
     # Calculate vectors from joint to start and end points
-    x1, y1 = keypoint_start[0] - keypoint_joint[0], keypoint_start[1] - keypoint_joint[1]
-    x2, y2 = keypoint_end[0] - keypoint_joint[0], keypoint_end[1] - keypoint_joint[1]
+    x1, y1 = start[0] - joint[0], start[1] - joint[1]
+    x2, y2 = end[0] - joint[0], end[1] - joint[1]
     
     # Calculate the angle using arctan2
     angle1 = math.atan2(y1, x1)
@@ -340,22 +368,26 @@ def keypoint_angle(keypoint_start, keypoint_joint, keypoint_end):
     
     return ((angle_deg + 180) % 360) - 180
 
-# Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees).
-def keypoint_slope(keypoint_start, keypoint_end):
-    dy = keypoint_end[1] - keypoint_start[1]
-    dx = keypoint_end[0] - keypoint_start[0]
+# Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). Returns the numerical slope (dy/dx).
+def keypoint_slope(start, end):
+    dy = end[1] - start[1]
+    dx = end[0] - start[0]
 
     return dy/dx
+
+# Takes two keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). Returns the slope in degrees.
+def keypoint_slope_degrees(start, end):
+    return keypoint_angle(start=(start[0]+1, start[1]), joint=start, end=end)
 
 """
 Takes two keypoints (not necessarily connected), and returns a NAIVE estimate of whether they are positioned horizontally (taking the horizontal as 0 degrees).
 Returns true if the slope is less than the threshold slope angle alpha.
 """
-def keypoints_are_horizontal(keypoint_start, keypoint_end, alpha):
-    slope = keypoint_slope(keypoint_start, keypoint_end)
-    slope_alpha = abs(np.atan(alpha))
+def keypoints_are_horizontal(start, end, alpha):
+    slope = keypoint_slope_degrees(start, end)
+    # slope_alpha = abs(math.atan2(alpha))
 
-    return (abs(slope) < slope_alpha)
+    return (abs(slope) < alpha)
 
 """
 Takes two *pairs* of keypoints (not necessarily connected), and returns the slope between them (taking the horizontal as 0 degrees). 
@@ -366,27 +398,27 @@ If you want to use this method with a single keypoint and a pair, then you can p
 This method is more reliable for finding slope when the endpoints are seen from a head-on angle, which due to perspective can appear as vertical instead.
 Returns true if the slope is less than the threshold slope angle +/- alpha.
 """
-def keypoint_pairs_are_horizontal(keypoint_start_pair, keypoint_end_pair, alpha):
-    slope_1 = keypoint_slope(keypoint_start_pair[0], keypoint_end_pair[1])
-    slope_2 = keypoint_slope(keypoint_start_pair[1], keypoint_end_pair[0])
-    slope_alpha = abs(np.atan(alpha))
+def keypoint_pairs_are_horizontal(start_pair, end_pair, alpha):
+    slope_1 = keypoint_slope_degrees(start_pair[0], end_pair[1])
+    slope_2 = keypoint_slope_degrees(start_pair[1], end_pair[0])
+    # slope_alpha = abs(math.atan2(alpha))
 
-    return (abs(slope_1) < slope_alpha) & (abs(slope_2) < slope_alpha)
+    return (abs(slope_1) < alpha) & (abs(slope_2) < alpha)
 
 """
 Returns true if the joint is above the line drawn from start to end points.
 """
-def is_above_line(keypoint_start, keypoint_end, keypoint_joint):
+def is_above_line(start, end, joint):
     # first interpolate where the joint's y-coord would be if it was perfectly in line from start to end. 
     # let's call this y_joint*. 
-    y_joint_star = interpolate(keypoint_start, keypoint_end, x_sample=keypoint_joint[0])
+    y_joint_star = interpolate(start, end, x_sample=joint[0])
 
-    return keypoint_joint[1] > y_joint_star
+    return joint[1] > y_joint_star
 
 # Returns the y-coord of an x-coord sample if taken along the line from start to end point.
-def interpolate(keypoint_start, keypoint_end, x_sample):
-    x1, y1 = keypoint_start[0], keypoint_start[1]
-    x2, y2 = keypoint_end[0], keypoint_end[1]
+def interpolate(start, end, x_sample):
+    x1, y1 = start[0], start[1]
+    x2, y2 = end[0], end[1]
 
     slope = (y2-y1) / (x2-x1)
     b = y1 - slope * x1
@@ -408,37 +440,40 @@ def get_feedback(pose_classification, pose):
     elbow_left  = pose["left_elbow"][:2]
     knee_right = pose["right_knee"][:2]
     knee_left  = pose["left_knee"][:2]
-    lip_right = pose["right_lip"][:2]
-    lip_left  = pose["left_lip"][:2]
+    lip_right = pose["mouth_right"][:2]
+    lip_left  = pose["mouth_left"][:2]
+    nose  = pose["nose"][:2]
 
-    wrists_mid = np.mean([bodymap["left_wrist"][:2], bodymap["right_wrist"][:2]], axis=0)
-    shoulders_mid = np.mean([bodymap["left_shoulder"][:2], bodymap["right_shoulder"][:2]], axis=0)
-    ankles_mid = np.mean([bodymap["left_ankle"][:2], bodymap["right_ankle"][:2]], axis=0)
-    hips_mid = np.mean([bodymap["left_hip"][:2], bodymap["right_hip"][:2]], axis=0)
-    knees_mid = np.mean([bodymap["left_knee"][:2], bodymap["right_knee"][:2]], axis=0)
-    elbows_mid = np.mean([bodymap["left_elbow"][:2], bodymap["right_elbow"][:2]], axis=0)
-    lips_mid = np.mean([bodymap["left_lip"][:2], bodymap["right_lip"][:2]], axis=0)
+    wrists_mid = np.mean([pose["left_wrist"][:2], pose["right_wrist"][:2]], axis=0)
+    shoulders_mid = np.mean([pose["left_shoulder"][:2], pose["right_shoulder"][:2]], axis=0)
+    ankles_mid = np.mean([pose["left_ankle"][:2], pose["right_ankle"][:2]], axis=0)
+    hips_mid = np.mean([pose["left_hip"][:2], pose["right_hip"][:2]], axis=0)
+    knees_mid = np.mean([pose["left_knee"][:2], pose["right_knee"][:2]], axis=0)
+    elbows_mid = np.mean([pose["left_elbow"][:2], pose["right_elbow"][:2]], axis=0)
+    lips_mid = np.mean([pose["mouth_left"][:2], pose["mouth_right"][:2]], axis=0)
 
-    shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, hips_mid, keypoint_joint=knees_mid)
-    hips_are_above_shoulders = is_above_line(shoulders_mid, knees_mid, keypoint_joint=hips_mid)
-    left_elbow_angle = keypoint_angle(shoulder_left, wrist_left, keypoint_joint=elbow_left)
-    right_elbow_angle = keypoint_angle(shoulder_right, wrist_right, keypoint_joint=elbow_right)
-    lip_nose_slope = keypoint_slope(lips_mid, pose["nose"][:2])
-    back_slope = keypoint_slope(hips_mid, shoulders_mid)
-    thigh_slope = keypoint_slope(hips_mid, knees_mid)
+    shoulders_knees_hips_angle = keypoint_angle(shoulders_mid, knees_mid, hips_mid)
+    hips_are_above_shoulders = is_above_line(shoulders_mid, hips_mid, knees_mid)
+    left_elbow_angle = keypoint_angle(shoulder_left, elbow_left, wrist_left)
+    right_elbow_angle = keypoint_angle(shoulder_right, elbow_right, wrist_right)
+    lip_nose_slope = keypoint_slope_degrees(lips_mid, nose)
+    back_slope = keypoint_slope_degrees(hips_mid, shoulders_mid)
+    thigh_slope = keypoint_slope_degrees(hips_mid, knees_mid)
 
     feedback = []
+    problem_limbs = set()
     
-    if pose_classification == "pushup":
-
+    if pose_classification == "pushup_DOWN":
         # bad form, take care of worst issues first
         # if back is arched up (shoulder-hip-knee angle is deviates from 180 degrees by >20degrees , hip lies ABOVE line from shoulder to knees)
         if (abs(shoulders_knees_hips_angle) > 20 and hips_are_above_shoulders):
             feedback.append("lower your hips!")
+            problem_limbs.add(('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee'))
     
         # if back is arched down (shoulder-hip-knee angle is deviates from 180 degrees, hip lies BELOW line from shoulder to knees)
         if (abs(shoulders_knees_hips_angle) > 20 and not hips_are_above_shoulders):
             feedback.append("raise your hips, don't slouch")
+            problem_limbs.add(('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee'))
     
         # no need for this one (and lots of potential for error if observing directly from the side)
         # return "put your arms at shoulder width apart"
@@ -446,12 +481,14 @@ def get_feedback(pose_classification, pose):
         # if elbows aren't fully straightened (need to measure each side independently)
         if (abs(left_elbow_angle) < 160 and abs(right_elbow_angle) < 160):
             feedback.append("fully extend your elbows!")
+            problem_limbs.add(('right_elbow', 'right_shoulder'), ('right_elbow', 'right_wrist'), ('left_elbow', 'left_shoulder'), ('left_elbow', 'left_wrist'))
     
         # return "don't flare elbow, tuck them in!"
     
         # if slope from midpoint of lip markers to tip of nose deviates from the slope of back (midpoint of hips to midpoint of shoulders)
         if (abs(lip_nose_slope - back_slope) > 40):
             feedback.append("don't look up!")
+            problem_limbs.add(('right_eye_inner', 'nose'), ('left_eye_inner', 'nose'))
 
         # good
         praise = ["perfect, keep going!",
@@ -460,32 +497,33 @@ def get_feedback(pose_classification, pose):
         # only praise if we didn't have any negative feedback
         if len(feedback) == 0:
             feedback.append(random.choice(praise))
+    
+    if pose_classification == "pushup_UP":
+        pushup_UP_feedback = ["And... down!", "down!", "next rep!"]
+        feedback.append(random.choice(pushup_UP_feedback))
         
-        return feedback
-        
-    if pose_classification == "squat":
-        
+    if pose_classification == "squat_DOWN":
         # bad form, take care of worst issues first
 
         # if slope of hips to knees deviates from horizontal
         if (abs(thigh_slope) > 30):
-            return "squat deeper!"
-    
-        # if slope from back deviates from vertical
-        if (abs(back_slope) > 30):
-            return "keep your back straight!"
+            feedback.append("squat deeper!")
+            problem_limbs.add(('right_hip', 'right_knee'), ('left_hip', 'left_knee'))
     
         # if slope from back deviates from vertical more than 40 degrees
-        return "don't lean forward too much!"
+        if (abs(90-back_slope) > 30):
+            straighten_back_feedback = ["don't lean forward too much!", "keep your back straight!"]
+            feedback.append(random.choice(straighten_back_feedback))
+            problem_limbs.add(('right_hip', 'right_shoulder'), ('left_hip', 'left_shoulder'))
     
         # if slope of heel-toe deviates from vertical
-        return "don't  lift your heels from the ground!"
+        # return "don't  lift your heels from the ground!"
     
         # if angle of toe-heel-knee deviates too much from 90 degrees
-        return "keep your knees behind your toes!"
+        # return "keep your knees behind your toes!"
     
         # if neck angle is more than 45 degrees
-        return "no turtle neck!"
+        # return "no turtle neck!"
     
 
         # good
@@ -497,11 +535,12 @@ def get_feedback(pose_classification, pose):
         if len(feedback) == 0:
             feedback.append(random.choice(praise))
         
-        return feedback
 
-        
     if pose_classification == "neutral":
-        return "let's get to it!"
+        feedback.append("let's get to it!")
+
+    return feedback, problem_limbs
+        
 
 
 if __name__ == '__main__':
@@ -528,11 +567,12 @@ if __name__ == '__main__':
         print(pose_classification)
         time.sleep(1)
 
-        feedback = get_feedback(pose_classification, pose)
-        feedback = "DUMMY DATA - you're doing great!"
+        feedback, problem_limbs = get_feedback(pose_classification, pose)
+        # feedback = "DUMMY DATA - you're doing great!"
 
         # send json response to AWS with classification and feedback
-        upload_json_response(feedback, pose_classification)
+        upload_json_response(feedback[0], pose_classification)
+        upload_annotated_image()
 
         time.sleep(2)
         # if pose_classification == 'squat':
