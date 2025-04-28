@@ -95,43 +95,52 @@ def draw_landmarks_on_image(rgb_image, detection_result):
 
     return annotated_image, pose_body_maps
 
-def highlight_body_segments(annotated_image, pose_body_maps, segments_to_highlight):
+def highlight_body_segments(pose, segments_to_highlight):
     '''
     Highlights specific body segments on an already annotated image.
     
     Args:
-        annotated_image: The image already annotated with pose landmarks
-        pose_body_maps: List of body part maps returned by draw_landmarks_on_image
+        pose: Dictionary mapping body part names to their coordinates
         segments_to_highlight: List of tuples of body part names to highlight, e.g. 
-                               [('left_shoulder', 'left_elbow'), ('right_hip', 'right_knee')]
+                              [('left_shoulder', 'left_elbow'), ('right_hip', 'right_knee')]
     
     Returns:
         highlighted_image: The image with highlighted segments
     '''
-    highlighted_image = np.copy(annotated_image)
+    filename = "pose_prediction.png"
     
-    # Process each detected pose
-    for body_map in pose_body_maps:
-        # Draw each segment to highlight
-        for start_part, end_part in segments_to_highlight:
-            # Check if both body parts exist in the map
-            if start_part in body_map and end_part in body_map:
-                # Get coordinates of start and end points
-                start_point = body_map[start_part]
-                end_point = body_map[end_part]
-                
-                # Convert normalized coordinates to pixel coordinates
-                h, w = highlighted_image.shape[:2]
-                start_pixel = (int(start_point[0] * w), int(start_point[1] * h))
-                end_pixel = (int(end_point[0] * w), int(end_point[1] * h))
-                
-                # Draw a thick red line
-                cv2.line(highlighted_image, 
-                         start_pixel, 
-                         end_pixel, 
-                         color=(0, 0, 255),  # BGR format: Red
-                         thickness=5)
+    # Load the image
+    image = cv2.imread(filename)
+    highlighted_image = np.copy(image)
     
+    # Get the image dimensions
+    h, w = highlighted_image.shape[:2]
+    
+    # Draw each segment to highlight
+    for start_part, end_part in segments_to_highlight:
+        # Check if both body parts exist in the pose dictionary
+        if start_part in pose and end_part in pose:
+            # Get coordinates of start and end points
+            start_point = pose[start_part]
+            end_point = pose[end_part]
+            
+            # Convert normalized coordinates to pixel coordinates
+            start_pixel = (int(start_point[0] * w), int(start_point[1] * h))
+            end_pixel = (int(end_point[0] * w), int(end_point[1] * h))
+            
+            # Draw a thick red line
+            cv2.line(highlighted_image, 
+                     start_pixel, 
+                     end_pixel, 
+                     color=(0, 0, 255),  # BGR format: Red
+                     thickness=5)
+    
+    # Save the highlighted image
+    # output_filename = "highlighted_" + filename
+    # cv2.imwrite(output_filename, highlighted_image)
+    plt.imsave("highlighted.png", cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
+    
+    # Return the numpy array of the highlighted image
     return highlighted_image
 
 # STEP 2: Create an PoseLandmarker object.
@@ -166,6 +175,7 @@ def pose_detect(filename="image.jpg"):
 
     # print(json.dumps(body_maps[0], indent=2))
     return body_maps
+    
 
 def download_screenshot():
     print(f"Downloading screenshot at {time.strftime('%H:%M:%S')}")
@@ -184,20 +194,30 @@ def download_screenshot():
     except Exception as e:
         print(f"Error downloading: {e}")
 
-def update_prediction():
+def update_prediction(TESTING=False, filename="image.jpg"):
     start_time = time.perf_counter()
+    body_maps = {}
 
-    download_screenshot()
-    # pose_detect(filename="screenshot.png")
+    if TESTING:
+        print("FILE: ", filename)
+        cv2.imwrite("image.jpg", cv2.imread(filename))
+        # body_maps = pose_detect()
+    else:
+        download_screenshot()
+    
     body_maps = pose_detect()
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
 
-    print(f"Downloaded and predicted in {elapsed_time:.4f} seconds")
+    if TESTING:
+        print(f"Retrieved local image and predicted in {elapsed_time:.4f} seconds")
+    else:
+        print(f"Downloaded image and predicted in {elapsed_time:.4f} seconds")
+        
     return body_maps
 
-def classify_exercise(bodymap):
+def classify_exercise(pose):
     """
     Classify exercise as either pushup or squat based on pose landmarks
     
@@ -334,6 +354,8 @@ def upload_test_image():
         else:
             print(f"Failed to upload {image_path}. Status code: {response.status_code}")
     
+    return image_path
+    
 def upload_annotated_image():
     image_path = "pose_prediction.png"
 
@@ -468,12 +490,12 @@ def get_feedback(pose_classification, pose):
         # if back is arched up (shoulder-hip-knee angle is deviates from 180 degrees by >20degrees , hip lies ABOVE line from shoulder to knees)
         if (abs(shoulders_knees_hips_angle) > 20 and hips_are_above_shoulders):
             feedback.append("lower your hips!")
-            problem_limbs.add(('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee'))
+            problem_limbs.update({('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee')})
     
         # if back is arched down (shoulder-hip-knee angle is deviates from 180 degrees, hip lies BELOW line from shoulder to knees)
         if (abs(shoulders_knees_hips_angle) > 20 and not hips_are_above_shoulders):
             feedback.append("raise your hips, don't slouch")
-            problem_limbs.add(('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee'))
+            problem_limbs.update({('right_hip', 'right_shoulder'), ('right_hip', 'right_knee'), ('left_hip', 'left_shoulder'), ('left_hip', 'left_knee')})
     
         # no need for this one (and lots of potential for error if observing directly from the side)
         # return "put your arms at shoulder width apart"
@@ -481,14 +503,14 @@ def get_feedback(pose_classification, pose):
         # if elbows aren't fully straightened (need to measure each side independently)
         if (abs(left_elbow_angle) < 160 and abs(right_elbow_angle) < 160):
             feedback.append("fully extend your elbows!")
-            problem_limbs.add(('right_elbow', 'right_shoulder'), ('right_elbow', 'right_wrist'), ('left_elbow', 'left_shoulder'), ('left_elbow', 'left_wrist'))
+            problem_limbs.update({('right_elbow', 'right_shoulder'), ('right_elbow', 'right_wrist'), ('left_elbow', 'left_shoulder'), ('left_elbow', 'left_wrist')})
     
         # return "don't flare elbow, tuck them in!"
     
         # if slope from midpoint of lip markers to tip of nose deviates from the slope of back (midpoint of hips to midpoint of shoulders)
         if (abs(lip_nose_slope - back_slope) > 40):
             feedback.append("don't look up!")
-            problem_limbs.add(('right_eye_inner', 'nose'), ('left_eye_inner', 'nose'))
+            problem_limbs.update({('right_eye_inner', 'nose'), ('left_eye_inner', 'nose')})
 
         # good
         praise = ["perfect, keep going!",
@@ -508,13 +530,13 @@ def get_feedback(pose_classification, pose):
         # if slope of hips to knees deviates from horizontal
         if (abs(thigh_slope) > 30):
             feedback.append("squat deeper!")
-            problem_limbs.add(('right_hip', 'right_knee'), ('left_hip', 'left_knee'))
+            problem_limbs.update({('right_hip', 'right_knee'), ('left_hip', 'left_knee')})
     
         # if slope from back deviates from vertical more than 40 degrees
         if (abs(90-back_slope) > 30):
             straighten_back_feedback = ["don't lean forward too much!", "keep your back straight!"]
             feedback.append(random.choice(straighten_back_feedback))
-            problem_limbs.add(('right_hip', 'right_shoulder'), ('left_hip', 'left_shoulder'))
+            problem_limbs.update({('right_hip', 'right_shoulder'), ('left_hip', 'left_shoulder')})
     
         # if slope of heel-toe deviates from vertical
         # return "don't  lift your heels from the ground!"
@@ -539,6 +561,8 @@ def get_feedback(pose_classification, pose):
     if pose_classification == "neutral":
         feedback.append("let's get to it!")
 
+    print("Feedback: ", feedback)
+    print("HIGHLIGHTED LIMBS: ", problem_limbs)
     return feedback, problem_limbs
         
 
@@ -552,14 +576,22 @@ if __name__ == '__main__':
     # interval_seconds = 60  # Change this to your desired interval
     # schedule.every(interval_seconds).seconds.do(update_prediction)
 
+    TESTING = True
+    TEST_IMAGE = ""
+    body_maps = {}
+
     while True:
         
-        # upload dummy data
-        upload_test_image()
-        time.sleep(1)
+        if TESTING:
+            # upload dummy data
+            TEST_IMAGE = upload_test_image()
+            time.sleep(1)
 
         # pull stored data on AWS and predict
-        body_maps = update_prediction()
+        if TESTING:
+            body_maps = update_prediction(TESTING=TESTING, filename=TEST_IMAGE)
+        else:
+            body_maps = update_prediction()
 
         # classify exercise
         pose = body_maps[0] # get just one pose of interest
@@ -573,6 +605,12 @@ if __name__ == '__main__':
         # send json response to AWS with classification and feedback
         upload_json_response(feedback[0], pose_classification)
         upload_annotated_image()
+
+        highlighted_image = highlight_body_segments(pose, problem_limbs)
+
+        # Display or save the highlighted image
+        # cv2.imshow('Highlighted Pose', cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))
+        # cv2.waitKey(0)
 
         time.sleep(2)
         # if pose_classification == 'squat':
