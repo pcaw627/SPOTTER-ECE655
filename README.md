@@ -1,7 +1,8 @@
 SPOTTER (Smart Pose-tracking, Observation, and Training Technique Evaluation in Real-time)
+
 Phillip Williams, Leo Gutierrez
 
-SPOTTER is a full-stack IoT system designed to enhance workout safety and efficacy by providing real-time feedback on exercise form. The system uses pose estimation and machine learning to monitor users during exercises like pushups and squats, detecting improper form and delivering corrective audio/visual cues. 
+SPOTTER is a full-stack IoT system that enhances the safety and efficacy of physical therapy and workouts by providing real-time feedback on exercise form. The system uses pose estimation and machine learning to monitor users during exercises like pushups and squats, detecting improper form and delivering corrective audio/visual cues. 
 
 Our project architecture is built to capture an image on the client device, push it to AWS for storage, then retrieve and process the image feed on a remote desktop with a GPU. 
 
